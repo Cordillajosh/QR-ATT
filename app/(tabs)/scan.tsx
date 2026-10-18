@@ -1,32 +1,95 @@
+
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { useCallback, useState } from 'react';
+import {
+  ActivityIndicator,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
 import AppButton from '@/components/AppButton';
 import { COLORS } from '@/constants/colors';
-//import { STUDENT_ID } from '@/constants/student';
 import { useAuth } from '@/lib/auth';
 import { registerAttendance } from '@/lib/attendance';
 
 export default function ScanScreen() {
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const [permission, requestPermission] = useCameraPermissions();
+
   const [scanned, setScanned] = useState(false);
-  const [lastData, setLastData] = useState<string | null>(null);
+  const [processing, setProcessing] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
 
+  const handleBarcodeScanned = useCallback(
+    async ({ data }: { data: string }) => {
+      // Ignore additional camera callbacks while processing a scan.
+      if (scanned || processing) return;
+
+      setScanned(true);
+      setProcessing(true);
+      setMessage(null);
+      setSuccess(false);
+
+      if (authLoading) {
+        setMessage('Please wait while your account is loading.');
+        setProcessing(false);
+        return;
+      }
+
+      if (!user) {
+        setMessage('You need to sign in before recording attendance.');
+        setProcessing(false);
+        return;
+      }
+
+      try {
+        const result = await registerAttendance(data, user.id);
+        setMessage(result.message);
+        setSuccess(result.success);
+      } catch (error) {
+        console.error('Attendance registration failed:', error);
+        setMessage(
+          'Something went wrong while recording attendance. Please try again.'
+        );
+        setSuccess(false);
+      } finally {
+        setProcessing(false);
+      }
+    },
+    [authLoading, user, scanned, processing]
+  );
+
+  const handleScanAgain = () => {
+    setScanned(false);
+    setProcessing(false);
+    setMessage(null);
+    setSuccess(false);
+  };
+
   if (!permission) {
-    return <View style={styles.container} />;
+    return (
+      <View style={styles.container}>
+        <ActivityIndicator size="large" color={COLORS.primary} />
+        <Text style={styles.subtitle}>Checking camera permission...</Text>
+      </View>
+    );
   }
 
   if (!permission.granted) {
     return (
       <View style={styles.container}>
+        <View style={styles.permissionIcon}>
+          <Text style={styles.largeIcon}>▣</Text>
+        </View>
+
         <Text style={styles.title}>Camera Permission Needed</Text>
+
         <Text style={styles.subtitle}>
-          We need access to your camera to scan QR codes.
+          Allow camera access so you can scan the QR code for your event.
         </Text>
+
         <AppButton
           theme="primary"
           title="Grant Permission"
@@ -37,56 +100,92 @@ export default function ScanScreen() {
     );
   }
 
-  const handleBarcodeScanned = ({ data }: { data: string }) => {
-    setScanned(true);
-    setLastData(data);
-    //registerAttendance(data, STUDENT_ID).then((result) => {
-    const studentId = user?.id ?? 'unknown';
-    registerAttendance(data, studentId).then((result) => {
-      setMessage(result.message);
-      setSuccess(result.success);
-    });
-  };
-
-  const handleScanAgain = () => {
-    setScanned(false);
-    setLastData(null);
-    setMessage(null);
-  };
-
   return (
     <View style={styles.container}>
-      <CameraView
-        style={styles.camera}
-        facing="back"
-        barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-        onBarcodeScanned={scanned ? undefined : handleBarcodeScanned}
-      />
+      {!scanned && (
+        <CameraView
+          style={styles.camera}
+          facing="back"
+          barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+          onBarcodeScanned={handleBarcodeScanned}
+        />
+      )}
 
-      <View style={styles.overlay}>
-        <Text style={styles.overlayText}>
-          {scanned ? 'QR Code detected!' : 'Point your camera at a QR code'}
-        </Text>
+      {!scanned && (
+        <View style={styles.scanGuide}>
+          <View style={styles.cornerTopLeft} />
+          <View style={styles.cornerTopRight} />
+          <View style={styles.cornerBottomLeft} />
+          <View style={styles.cornerBottomRight} />
 
-        {scanned && message && (
-          <Text
-            style={[styles.scanResult, success ? styles.success : styles.error]}
+          <Text style={styles.guideText}>Place the QR code inside the frame</Text>
+        </View>
+      )}
+
+      <View style={[styles.overlay, scanned && styles.resultOverlay]}>
+        <View style={styles.headerRow}>
+          <View style={styles.headerIcon}>
+            <Text style={styles.headerIconText}>QR</Text>
+          </View>
+
+          <View style={styles.headerTextContainer}>
+            <Text style={styles.title}>Scan Attendance</Text>
+            <Text style={styles.subtitle}>
+              {scanned
+                ? 'Scan result'
+                : 'Scan the official event QR code'}
+            </Text>
+          </View>
+        </View>
+
+        {processing && (
+          <View style={styles.processingRow}>
+            <ActivityIndicator size="small" color={COLORS.primary} />
+            <Text style={styles.processingText}>
+              Recording your attendance...
+            </Text>
+          </View>
+        )}
+
+        {scanned && !processing && message && (
+          <View
+            style={[
+              styles.resultBox,
+              success ? styles.successBox : styles.errorBox,
+            ]}
           >
-            {message}
-          </Text>
+            <Text style={styles.resultIcon}>
+              {success ? '✓' : '!'}
+            </Text>
+
+            <View style={styles.resultTextContainer}>
+              <Text
+                style={[
+                  styles.resultTitle,
+                  success ? styles.successText : styles.errorText,
+                ]}
+              >
+                {success ? 'Attendance Recorded' : 'Unable to Record'}
+              </Text>
+
+              <Text style={styles.resultMessage}>{message}</Text>
+            </View>
+          </View>
         )}
 
-        {scanned && lastData && (
-          <Text style={styles.scanData}>{lastData}</Text>
-        )}
-
-        {scanned && (
+        {scanned && !processing && (
           <AppButton
             theme="primary"
             title="Scan Again"
             icon="refresh"
             onPress={handleScanAgain}
           />
+        )}
+
+        {!scanned && (
+          <Text style={styles.privacyNote}>
+            Your attendance will be linked to your signed-in account.
+          </Text>
         )}
       </View>
     </View>
@@ -104,52 +203,186 @@ const styles = StyleSheet.create({
   camera: {
     ...StyleSheet.absoluteFillObject,
   },
-  title: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: COLORS.textPrimary,
-    marginBottom: 8,
+  scanGuide: {
+    position: 'absolute',
+    top: '23%',
+    width: 245,
+    height: 245,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  subtitle: {
-    fontSize: 14,
-    color: COLORS.textSecondary,
+  cornerTopLeft: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: 36,
+    height: 36,
+    borderTopWidth: 4,
+    borderLeftWidth: 4,
+    borderColor: '#FFFFFF',
+    borderTopLeftRadius: 12,
+  },
+  cornerTopRight: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    width: 36,
+    height: 36,
+    borderTopWidth: 4,
+    borderRightWidth: 4,
+    borderColor: '#FFFFFF',
+    borderTopRightRadius: 12,
+  },
+  cornerBottomLeft: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    width: 36,
+    height: 36,
+    borderBottomWidth: 4,
+    borderLeftWidth: 4,
+    borderColor: '#FFFFFF',
+    borderBottomLeftRadius: 12,
+  },
+  cornerBottomRight: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: 36,
+    height: 36,
+    borderBottomWidth: 4,
+    borderRightWidth: 4,
+    borderColor: '#FFFFFF',
+    borderBottomRightRadius: 12,
+  },
+  guideText: {
+    position: 'absolute',
+    top: '110%',
+    width: 280,
+    color: '#FFFFFF',
     textAlign: 'center',
-    lineHeight: 20,
-    marginBottom: 16,
+    fontSize: 13,
+    fontWeight: '700',
+    textShadowColor: '#000000',
+    textShadowRadius: 5,
   },
   overlay: {
     position: 'absolute',
-    left: 20,
-    right: 20,
-    bottom: 60,
+    left: 18,
+    right: 18,
+    bottom: 35,
     backgroundColor: COLORS.card,
-    borderRadius: 14,
-    padding: 16,
+    borderRadius: 20,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  resultOverlay: {
+    bottom: 35,
+  },
+  headerRow: {
+    flexDirection: 'row',
     alignItems: 'center',
+    marginBottom: 16,
   },
-  overlayText: {
+  headerIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 14,
+    backgroundColor: COLORS.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  headerIconText: {
+    color: COLORS.primary,
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '900',
+  },
+  headerTextContainer: {
+    flex: 1,
+  },
+  title: {
+    fontSize: 19,
+    fontWeight: '800',
     color: COLORS.textPrimary,
-    marginBottom: 6,
-    textAlign: 'center',
+    marginBottom: 4,
   },
-  scanResult: {
-    fontSize: 14,
-    textAlign: 'center',
-    marginBottom: 8,
-    fontWeight: '600',
-  },
-  success: {
-    color: '#2E7D32',
-  },
-  error: {
-    color: '#C62828',
-  },
-  scanData: {
-    fontSize: 12,
+  subtitle: {
+    fontSize: 13,
     color: COLORS.textSecondary,
+    lineHeight: 19,
     textAlign: 'center',
-    marginBottom: 12,
+  },
+  processingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    paddingVertical: 17,
+  },
+  processingText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+  },
+  resultBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    padding: 14,
+    borderRadius: 13,
+    marginBottom: 16,
+    gap: 10,
+  },
+  successBox: {
+    backgroundColor: '#E5F4E8',
+  },
+  errorBox: {
+    backgroundColor: '#FBE9E7',
+  },
+  resultIcon: {
+    fontSize: 21,
+    fontWeight: '900',
+    color: '#333333',
+  },
+  resultTextContainer: {
+    flex: 1,
+  },
+  resultTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    marginBottom: 5,
+  },
+  successText: {
+    color: '#246B35',
+  },
+  errorText: {
+    color: '#A52B25',
+  },
+  resultMessage: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: '#333333',
+  },
+  permissionIcon: {
+    width: 70,
+    height: 70,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.surface,
+    marginBottom: 18,
+  },
+  largeIcon: {
+    fontSize: 35,
+    color: COLORS.primary,
+    fontWeight: '800',
+  },
+  privacyNote: {
+    textAlign: 'center',
+    fontSize: 11,
+    lineHeight: 17,
+    color: COLORS.textSecondary,
+    marginTop: 13,
   },
 });

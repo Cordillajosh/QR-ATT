@@ -1,3 +1,4 @@
+
 import { supabase } from './supabase';
 import { parseQRPayload } from './qr';
 import { getEventByCode } from './events';
@@ -98,6 +99,15 @@ export async function registerAttendance(
   rawPayload: string,
   studentId: string
 ): Promise<RegisterResult> {
+  // 1. Make sure a student ID was provided.
+  if (!studentId || studentId === 'unknown') {
+    return {
+      success: false,
+      message: 'Please log in before scanning.',
+    };
+  }
+
+  // 2. Validate the QR code format.
   const result = parseQRPayload(rawPayload);
 
   if (!result.ok) {
@@ -109,60 +119,73 @@ export async function registerAttendance(
 
   const payload = result.payload;
 
+  // 3. Find an existing event in Supabase.
+  // Unknown QR codes must not automatically create events.
+  let foundEvent: Awaited<ReturnType<typeof getEventByCode>>;
+
+  try {
+    foundEvent = await getEventByCode(payload.event);
+  } catch {
+    return {
+      success: false,
+      message: 'Could not check the event. Please try again.',
+    };
+  }
+
+  if (!foundEvent) {
+    return {
+      success: false,
+      message:
+        'Event not found. Please ask your teacher for a valid QR code.',
+    };
+  }
+
+  const event = foundEvent;
+
+  // 4. Check the event's official schedule from Supabase.
   const now = Date.now();
-  const start = payload.start
-    ? new Date(payload.start).getTime()
-    : null;
-  const end = payload.end
-    ? new Date(payload.end).getTime()
-    : null;
 
-  if (start && now < start) {
-    return {
-      success: false,
-      message: 'Event has not started yet.',
-    };
-  }
+  if (event.start_time) {
+    const startTime = Date.parse(event.start_time);
 
-  if (end && now > end) {
-    return {
-      success: false,
-      message: 'Event has already ended.',
-    };
-  }
-
-  const title = payload.title ?? payload.event;
-
-  let event: { id: string; title: string } | null = null;
-
-  const foundEvent = await getEventByCode(payload.event);
-
-  if (foundEvent) {
-    event = foundEvent;
-  } else {
-    const { data: newEvent, error: insertError } = await supabase
-      .from('events')
-      .insert([
-        {
-          event_code: payload.event,
-          title,
-          start_time: payload.start ?? null,
-          end_time: payload.end ?? null,
-        },
-      ])
-      .select('id, title')
-      .single();
-
-    if (insertError) {
+    if (!Number.isFinite(startTime)) {
       return {
         success: false,
-        message: 'Could not create event.',
+        message: 'The event start time is invalid.',
+        eventTitle: event.title,
       };
     }
 
-    event = newEvent;
+    if (now < startTime) {
+      return {
+        success: false,
+        message: 'Event has not started yet.',
+        eventTitle: event.title,
+      };
+    }
   }
 
+  if (event.end_time) {
+    const endTime = Date.parse(event.end_time);
+
+    if (!Number.isFinite(endTime)) {
+      return {
+        success: false,
+        message: 'The event end time is invalid.',
+        eventTitle: event.title,
+      };
+    }
+
+    if (now > endTime) {
+      return {
+        success: false,
+        message: 'Event has already ended.',
+        eventTitle: event.title,
+      };
+    }
+  }
+
+  // 5. Save the attendance record.
   const { error: attError } = await supabase
     .from('attendance')
     .insert([
@@ -183,7 +206,8 @@ export async function registerAttendance(
 
     return {
       success: false,
-      message: attError.message,
+      message: 'Could not record attendance. Please try again.',
+      eventTitle: event.title,
     };
   }
 
